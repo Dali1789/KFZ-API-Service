@@ -16,14 +16,30 @@ const {
     logAnalyticsEvent
 } = require('./lib/businessLogic');
 
+// Import performance monitoring
+const {
+    requestMonitoringMiddleware,
+    errorMonitoringMiddleware,
+    monitorExtraction,
+    monitorDatabaseOperation,
+    monitorWebhook,
+    markPhase,
+    monitor
+} = require('./lib/performanceMiddleware');
+
 const app = express();
 
-// Middleware
+// ================================
+// MIDDLEWARE WITH MONITORING
+// ================================
 app.use(helmet());
 app.use(cors());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Add performance monitoring middleware
+app.use(requestMonitoringMiddleware);
 
 // Supabase Client
 const supabase = createClient(
@@ -32,51 +48,148 @@ const supabase = createClient(
 );
 
 // ================================
-// HEALTH CHECK
+// HEALTH CHECK WITH PERFORMANCE METRICS
 // ================================
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
+    markPhase(req, 'health_check_start');
+    
+    const healthData = monitor.getHealthCheck();
+    
+    markPhase(req, 'health_check_complete');
+    
+    res.json({
+        ...healthData,
         service: 'KFZ-Sachverständiger API',
-        version: '3.1.0-modular',
+        version: '3.2.0-performance-monitored',
         features: [
             'advanced_natural_language_processing', 
             'multi_layered_extraction', 
             'confidence_scoring',
             'intelligent_validation',
-            'modular_architecture'
-        ],
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime()
+            'modular_architecture',
+            'real_time_performance_monitoring',
+            'health_checks',
+            'error_tracking'
+        ]
     });
 });
 
 // ================================
-// ENHANCED RETELL WEBHOOK - MAIN ENDPOINT
+// PERFORMANCE MONITORING ENDPOINTS
+// ================================
+
+// Real-time performance dashboard
+app.get('/api/performance', (req, res) => {
+    markPhase(req, 'performance_report_start');
+    
+    const report = monitor.getPerformanceReport();
+    
+    markPhase(req, 'performance_report_complete');
+    
+    res.json(report);
+});
+
+// Performance metrics API
+app.get('/api/metrics', (req, res) => {
+    markPhase(req, 'metrics_start');
+    
+    const { timeframe = '1h' } = req.query;
+    const metrics = monitor.getMetrics(timeframe);
+    
+    markPhase(req, 'metrics_complete');
+    
+    res.json(metrics);
+});
+
+// System health endpoint
+app.get('/api/health/detailed', (req, res) => {
+    markPhase(req, 'detailed_health_start');
+    
+    const detailedHealth = {
+        ...monitor.getHealthCheck(),
+        system_info: {
+            node_version: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            uptime: process.uptime(),
+            memory: process.memoryUsage(),
+            cpu: process.cpuUsage()
+        },
+        environment: {
+            node_env: process.env.NODE_ENV,
+            port: process.env.PORT,
+            has_supabase_url: !!process.env.SUPABASE_URL,
+            has_supabase_key: !!process.env.SUPABASE_SERVICE_KEY,
+            has_retell_key: !!process.env.RETELL_API_KEY
+        }
+    };
+    
+    markPhase(req, 'detailed_health_complete');
+    
+    res.json(detailedHealth);
+});
+
+// ================================
+// ENHANCED RETELL WEBHOOK WITH MONITORING
 // ================================
 app.post('/api/retell/webhook', async (req, res) => {
     try {
+        markPhase(req, 'webhook_received');
+        
         const { call_id, transcript, duration_seconds, call_status } = req.body;
         
-        console.log('📞 Enhanced Retell Webhook:', { 
+        console.log('📞 Enhanced Retell Webhook with Performance Monitoring:', { 
             call_id, 
             call_status, 
             duration: duration_seconds,
-            transcript_length: transcript?.length || 0
+            transcript_length: transcript?.length || 0,
+            requestId: req.requestId
         });
         
+        markPhase(req, 'tenant_lookup_start');
+        const dbMonitor = monitorDatabaseOperation(req.requestId, 'SELECT', 'tenant_projects');
+        dbMonitor.start();
+        
         const tenantProjectId = await getTenantProjectId(supabase);
+        dbMonitor.end(!!tenantProjectId, tenantProjectId ? 1 : 0);
+        
         if (!tenantProjectId) {
             throw new Error('KFZ-Sachverständiger Projekt nicht gefunden');
         }
         
-        // 1. INTELLIGENT EXTRACTION
-        let extractedData = extractCustomerDataIntelligent(transcript);
+        markPhase(req, 'extraction_start');
         
-        // 2. PROCESS EXTRACTED DATA
+        // Monitor extraction with wrapper
+        const monitoredExtraction = monitorExtraction(req.requestId, extractCustomerDataIntelligent);
+        let extractedData = monitoredExtraction(transcript);
+        
+        markPhase(req, 'extraction_complete');
+        
+        // 2. PROCESS EXTRACTED DATA WITH MONITORING
         if (extractedData && extractedData.name && extractedData.phone) {
+            markPhase(req, 'customer_processing_start');
+            
+            // Monitor customer creation
+            const customerDbMonitor = monitorDatabaseOperation(req.requestId, 'INSERT/UPDATE', 'kfz_customers');
+            customerDbMonitor.start();
+            
             const customer = await createOrUpdateCustomer(extractedData, tenantProjectId, supabase);
+            customerDbMonitor.end(!!customer, 1);
+            
+            markPhase(req, 'project_creation_start');
+            
+            // Monitor project creation
+            const projectDbMonitor = monitorDatabaseOperation(req.requestId, 'INSERT', 'kfz_projects');
+            projectDbMonitor.start();
+            
             const project = await createProject(customer, extractedData, tenantProjectId, supabase);
+            projectDbMonitor.end(!!project, 1);
+            
+            markPhase(req, 'call_record_start');
+            
+            // Monitor call record saving
+            const callDbMonitor = monitorDatabaseOperation(req.requestId, 'INSERT', 'kfz_calls');
+            callDbMonitor.start();
             
             await saveCallRecord(
                 call_id, 
@@ -88,8 +201,11 @@ app.post('/api/retell/webhook', async (req, res) => {
                 tenantProjectId,
                 supabase
             );
+            callDbMonitor.end(true, 1);
             
-            // Enhanced analytics
+            markPhase(req, 'analytics_start');
+            
+            // Enhanced analytics with performance context
             await logAnalyticsEvent(
                 'call_completed_enhanced', 
                 tenantProjectId, 
@@ -100,7 +216,9 @@ app.post('/api/retell/webhook', async (req, res) => {
                     duration_seconds,
                     retell_call_id: call_id,
                     extraction_method: 'advanced_multi_layer',
-                    confidence_score: extractedData.confidence_score || 0
+                    confidence_score: extractedData.confidence_score || 0,
+                    request_id: req.requestId,
+                    processing_time: Date.now() - req.startTime
                 },
                 supabase
             );
@@ -108,7 +226,13 @@ app.post('/api/retell/webhook', async (req, res) => {
             // Handle appointments
             let appointment = null;
             if (extractedData.type === 'APPOINTMENT' && extractedData.address) {
+                markPhase(req, 'appointment_scheduling_start');
+                
+                const appointmentDbMonitor = monitorDatabaseOperation(req.requestId, 'INSERT', 'kfz_appointments');
+                appointmentDbMonitor.start();
+                
                 appointment = await scheduleAppointment(customer, project, extractedData, tenantProjectId, supabase);
+                appointmentDbMonitor.end(!!appointment, appointment ? 1 : 0);
                 
                 if (appointment) {
                     await logAnalyticsEvent(
@@ -119,7 +243,8 @@ app.post('/api/retell/webhook', async (req, res) => {
                         { 
                             appointment_date: appointment.scheduled_date,
                             appointment_type: appointment.appointment_type,
-                            confidence_score: extractedData.confidence_score || 0
+                            confidence_score: extractedData.confidence_score || 0,
+                            request_id: req.requestId
                         },
                         supabase
                     );
@@ -136,11 +261,14 @@ app.post('/api/retell/webhook', async (req, res) => {
                     { 
                         customer_phone: customer.phone,
                         customer_name: `${customer.first_name} ${customer.last_name}`,
-                        confidence_score: extractedData.confidence_score || 0
+                        confidence_score: extractedData.confidence_score || 0,
+                        request_id: req.requestId
                     },
                     supabase
                 );
             }
+            
+            markPhase(req, 'response_preparation');
             
             res.json({ 
                 success: true, 
@@ -151,13 +279,20 @@ app.post('/api/retell/webhook', async (req, res) => {
                     type: extractedData.type,
                     appointment_scheduled: !!appointment,
                     extraction_method: 'advanced_multi_layer_nlp',
-                    confidence_score: extractedData.confidence_score || 0
+                    confidence_score: extractedData.confidence_score || 0,
+                    processing_time: Date.now() - req.startTime,
+                    request_id: req.requestId
                 }
             });
             
         } else {
-            // Enhanced fallback handling
+            // Enhanced fallback handling with monitoring
+            markPhase(req, 'fallback_handling');
+            
             console.log('⚠️ No valid data extracted with any method');
+            
+            const fallbackDbMonitor = monitorDatabaseOperation(req.requestId, 'INSERT', 'kfz_calls');
+            fallbackDbMonitor.start();
             
             await supabase.from('kfz_calls').insert({
                 tenant_project_id: tenantProjectId,
@@ -170,9 +305,12 @@ app.post('/api/retell/webhook', async (req, res) => {
                 agent_version: 'markus-v3-enhanced',
                 extracted_data: extractedData || { 
                     extraction_failed: true, 
-                    attempted_methods: ['advanced', 'natural', 'structured'] 
+                    attempted_methods: ['advanced', 'natural', 'structured'],
+                    request_id: req.requestId
                 }
             });
+            
+            fallbackDbMonitor.end(true, 1);
             
             res.json({ 
                 success: true, 
@@ -182,7 +320,9 @@ app.post('/api/retell/webhook', async (req, res) => {
                     requires_manual_review: true,
                     extraction_attempted: true,
                     extraction_methods_tried: ['advanced_nlp', 'natural_language', 'structured_format'],
-                    confidence_score: extractedData?.confidence_score || 0
+                    confidence_score: extractedData?.confidence_score || 0,
+                    processing_time: Date.now() - req.startTime,
+                    request_id: req.requestId
                 }
             });
         }
@@ -192,18 +332,23 @@ app.post('/api/retell/webhook', async (req, res) => {
         res.status(500).json({ 
             error: error.message,
             call_id: req.body.call_id,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            request_id: req.requestId
         });
     }
 });
 
 // ================================
-// ENHANCED DASHBOARD API
+// ENHANCED DASHBOARD API WITH MONITORING
 // ================================
 app.get('/api/dashboard', async (req, res) => {
     try {
+        markPhase(req, 'dashboard_data_collection_start');
+        
         const tenantProjectId = await getTenantProjectId(supabase);
         const today = new Date().toISOString().split('T')[0];
+        
+        markPhase(req, 'dashboard_queries_start');
         
         const [
             { count: projectsToday },
@@ -241,6 +386,8 @@ app.get('/api/dashboard', async (req, res) => {
                 .limit(10)
         ]);
         
+        markPhase(req, 'dashboard_calculations_start');
+        
         // Calculate extraction success rate
         const successfulExtractions = recentCalls.filter(call => 
             call.extracted_data && 
@@ -261,6 +408,11 @@ app.get('/api/dashboard', async (req, res) => {
             ? (confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length).toFixed(2)
             : 0;
         
+        // Get performance data
+        const performanceData = monitor.getPerformanceReport();
+        
+        markPhase(req, 'dashboard_response_preparation');
+        
         res.json({
             today: {
                 projects: projectsToday,
@@ -278,119 +430,46 @@ app.get('/api/dashboard', async (req, res) => {
                 average_confidence: averageConfidence,
                 total_processed: recentCalls.length
             },
+            performance: {
+                avg_request_time: performanceData.performance.avgRequestTime,
+                avg_extraction_time: performanceData.performance.avgExtractionTime,
+                error_rate: performanceData.performance.errorRate,
+                memory_usage: performanceData.memory.heapUsed,
+                uptime: performanceData.system.uptimeFormatted
+            },
             system: {
-                version: '3.1.0-modular',
+                version: '3.2.0-performance-monitored',
                 features: [
                     'advanced_nlp',
                     'multi_layer_extraction',
                     'confidence_scoring',
-                    'modular_architecture'
+                    'modular_architecture',
+                    'real_time_monitoring',
+                    'performance_analytics'
                 ]
             },
-            lastUpdated: new Date().toISOString()
+            lastUpdated: new Date().toISOString(),
+            request_id: req.requestId
         });
         
     } catch (error) {
         console.error('Dashboard Error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ================================
-// EXTRACTION ANALYTICS API
-// ================================
-app.get('/api/extraction/analytics', async (req, res) => {
-    try {
-        const tenantProjectId = await getTenantProjectId(supabase);
-        const { days = 7 } = req.query;
-        
-        const sinceDate = new Date();
-        sinceDate.setDate(sinceDate.getDate() - parseInt(days));
-        
-        const { data: calls } = await supabase
-            .from('kfz_calls')
-            .select('extracted_data, created_at')
-            .eq('tenant_project_id', tenantProjectId)
-            .gte('created_at', sinceDate.toISOString());
-        
-        const analytics = {
-            total_calls: calls.length,
-            successful_extractions: 0,
-            method_breakdown: {
-                advanced_nlp: 0,
-                natural_language: 0,
-                structured_format: 0,
-                failed: 0
-            },
-            confidence_distribution: {
-                high: 0, // > 0.8
-                medium: 0, // 0.5 - 0.8
-                low: 0, // < 0.5
-                unknown: 0
-            },
-            field_success_rates: {
-                name: 0,
-                phone: 0,
-                address: 0,
-                appointment: 0
-            }
-        };
-        
-        calls.forEach(call => {
-            const data = call.extracted_data;
-            
-            if (data && data.name && data.phone) {
-                analytics.successful_extractions++;
-                
-                const method = data.extraction_details?.method || 'unknown';
-                if (analytics.method_breakdown[method] !== undefined) {
-                    analytics.method_breakdown[method]++;
-                }
-                
-                const confidence = data.confidence_score || 0;
-                if (confidence > 0.8) {
-                    analytics.confidence_distribution.high++;
-                } else if (confidence >= 0.5) {
-                    analytics.confidence_distribution.medium++;
-                } else if (confidence > 0) {
-                    analytics.confidence_distribution.low++;
-                } else {
-                    analytics.confidence_distribution.unknown++;
-                }
-                
-                if (data.name) analytics.field_success_rates.name++;
-                if (data.phone) analytics.field_success_rates.phone++;
-                if (data.address) analytics.field_success_rates.address++;
-                if (data.appointment) analytics.field_success_rates.appointment++;
-            } else {
-                analytics.method_breakdown.failed++;
-            }
+        res.status(500).json({ 
+            error: error.message,
+            request_id: req.requestId
         });
-        
-        if (analytics.total_calls > 0) {
-            analytics.success_rate = (analytics.successful_extractions / analytics.total_calls * 100).toFixed(1);
-            
-            Object.keys(analytics.field_success_rates).forEach(field => {
-                analytics.field_success_rates[field] = 
-                    (analytics.field_success_rates[field] / analytics.total_calls * 100).toFixed(1);
-            });
-        }
-        
-        res.json(analytics);
-        
-    } catch (error) {
-        console.error('Extraction Analytics Error:', error);
-        res.status(500).json({ error: error.message });
     }
 });
 
 // ================================
-// BASIC CRUD APIs
+// OTHER MONITORED ENDPOINTS
 // ================================
 
-// Get customers
+// Get customers with monitoring
 app.get('/api/customers', async (req, res) => {
     try {
+        markPhase(req, 'customers_query_start');
+        
         const tenantProjectId = await getTenantProjectId(supabase);
         const { data, error } = await supabase
             .from('kfz_customers')
@@ -398,16 +477,20 @@ app.get('/api/customers', async (req, res) => {
             .eq('tenant_project_id', tenantProjectId)
             .order('created_at', { ascending: false });
         
+        markPhase(req, 'customers_query_complete');
+        
         if (error) throw error;
         res.json(data);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: error.message, request_id: req.requestId });
     }
 });
 
-// Get projects
+// Get projects with monitoring  
 app.get('/api/projects', async (req, res) => {
     try {
+        markPhase(req, 'projects_query_start');
+        
         const tenantProjectId = await getTenantProjectId(supabase);
         const { data, error } = await supabase
             .from('kfz_projects')
@@ -415,16 +498,20 @@ app.get('/api/projects', async (req, res) => {
             .eq('tenant_project_id', tenantProjectId)
             .order('created_at', { ascending: false });
         
+        markPhase(req, 'projects_query_complete');
+        
         if (error) throw error;
         res.json(data);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: error.message, request_id: req.requestId });
     }
 });
 
-// Get calls
+// Get calls with monitoring
 app.get('/api/calls', async (req, res) => {
     try {
+        markPhase(req, 'calls_query_start');
+        
         const tenantProjectId = await getTenantProjectId(supabase);
         const { data, error } = await supabase
             .from('kfz_calls')
@@ -432,15 +519,20 @@ app.get('/api/calls', async (req, res) => {
             .eq('tenant_project_id', tenantProjectId)
             .order('created_at', { ascending: false });
         
+        markPhase(req, 'calls_query_complete');
+        
         if (error) throw error;
         res.json(data);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: error.message, request_id: req.requestId });
     }
 });
 
+// Add error handling middleware
+app.use(errorMonitoringMiddleware);
+
 // ================================
-// SERVER START
+// SERVER START WITH MONITORING
 // ================================
 
 const PORT = process.env.PORT || 3000;
@@ -448,23 +540,34 @@ const PORT = process.env.PORT || 3000;
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('🛑 SIGTERM received, shutting down gracefully...');
+    console.log('📊 Final Performance Report:', monitor.getPerformanceReport());
     process.exit(0);
 });
 
 process.on('SIGINT', () => {
     console.log('🛑 SIGINT received, shutting down gracefully...');
+    console.log('📊 Final Performance Report:', monitor.getPerformanceReport());
     process.exit(0);
 });
 
 app.listen(PORT, () => {
     console.log('🚀 KFZ-Sachverständiger API läuft auf Port', PORT);
     console.log(`📊 Dashboard: http://localhost:${PORT}/api/dashboard`);
+    console.log(`📈 Performance: http://localhost:${PORT}/api/performance`);
+    console.log(`🩺 Health: http://localhost:${PORT}/health`);
     console.log(`🔗 Webhook: http://localhost:${PORT}/api/retell/webhook`);
     console.log('💾 Database: Connected');
     console.log('🧠 Enhanced Multi-Layer Data Extraction Ready!');
     console.log('🎯 Advanced Natural Language Processing Active!');
     console.log('📊 Confidence Scoring & Analytics Enabled!');
     console.log('🏗️ Modular Architecture: ACTIVE');
+    console.log('📈 Real-time Performance Monitoring: ACTIVE');
+    console.log('🩺 Health Checks & Error Tracking: ACTIVE');
+    
+    // Log initial system health
+    setTimeout(() => {
+        console.log('📊 Initial System Health:', monitor.getHealthCheck());
+    }, 2000);
 });
 
 module.exports = app;
