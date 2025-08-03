@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
@@ -32,11 +33,23 @@ const app = express();
 // ================================
 // MIDDLEWARE WITH MONITORING
 // ================================
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            scriptSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "https:"],
+        },
+    },
+}));
 app.use(cors());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Serve static files from public directory
+app.use('/public', express.static(path.join(__dirname, 'public')));
 
 // Add performance monitoring middleware
 app.use(requestMonitoringMiddleware);
@@ -46,6 +59,20 @@ const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_KEY
 );
+
+// ================================
+// DASHBOARD ROUTES
+// ================================
+
+// Redirect root to dashboard
+app.get('/', (req, res) => {
+    res.redirect('/public/dashboard.html');
+});
+
+// Dashboard redirect
+app.get('/dashboard', (req, res) => {
+    res.redirect('/public/dashboard.html');
+});
 
 // ================================
 // HEALTH CHECK WITH PERFORMANCE METRICS
@@ -69,7 +96,8 @@ app.get('/health', (req, res) => {
             'modular_architecture',
             'real_time_performance_monitoring',
             'health_checks',
-            'error_tracking'
+            'error_tracking',
+            'web_dashboard'
         ]
     });
 });
@@ -94,7 +122,7 @@ app.get('/api/metrics', (req, res) => {
     markPhase(req, 'metrics_start');
     
     const { timeframe = '1h' } = req.query;
-    const metrics = monitor.getMetrics(timeframe);
+    const metrics = monitor.getMetrics ? monitor.getMetrics(timeframe) : { message: 'Metrics collection in progress' };
     
     markPhase(req, 'metrics_complete');
     
@@ -445,7 +473,8 @@ app.get('/api/dashboard', async (req, res) => {
                     'confidence_scoring',
                     'modular_architecture',
                     'real_time_monitoring',
-                    'performance_analytics'
+                    'performance_analytics',
+                    'web_dashboard'
                 ]
             },
             lastUpdated: new Date().toISOString(),
@@ -552,7 +581,8 @@ process.on('SIGINT', () => {
 
 app.listen(PORT, () => {
     console.log('🚀 KFZ-Sachverständiger API läuft auf Port', PORT);
-    console.log(`📊 Dashboard: http://localhost:${PORT}/api/dashboard`);
+    console.log(`🌐 Web Dashboard: http://localhost:${PORT}/dashboard`);
+    console.log(`📊 API Dashboard: http://localhost:${PORT}/api/dashboard`);
     console.log(`📈 Performance: http://localhost:${PORT}/api/performance`);
     console.log(`🩺 Health: http://localhost:${PORT}/health`);
     console.log(`🔗 Webhook: http://localhost:${PORT}/api/retell/webhook`);
@@ -563,6 +593,7 @@ app.listen(PORT, () => {
     console.log('🏗️ Modular Architecture: ACTIVE');
     console.log('📈 Real-time Performance Monitoring: ACTIVE');
     console.log('🩺 Health Checks & Error Tracking: ACTIVE');
+    console.log('🌐 Web Dashboard Interface: ACTIVE');
     
     // Log initial system health
     setTimeout(() => {
