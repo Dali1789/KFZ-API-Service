@@ -1,10 +1,12 @@
 {
   "name": "kfz-sachverstaendiger-api",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "description": "API für KFZ-Sachverständiger mit Retell Integration, Kalender und E-Mail-Benachrichtigungen",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start:fix": "node startup-permissions-fix.js && node server.js",
+    "permissions-fix": "node startup-permissions-fix.js",
     "dev": "nodemailer server.js"
   },
   "dependencies": {
