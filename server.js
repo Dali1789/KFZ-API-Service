@@ -716,7 +716,7 @@ app.post('/api/retell/webhook', async (req, res) => {
 });
 
 // ================================
-// ENHANCED DASHBOARD API WITH MONITORING
+// ENHANCED DASHBOARD API WITH MONITORING - FIXED NULL HANDLING
 // ================================
 app.get('/api/dashboard', async (req, res) => {
     try {
@@ -727,13 +727,14 @@ app.get('/api/dashboard', async (req, res) => {
         
         markPhase(req, 'dashboard_queries_start');
         
+        // FIXED: Added null safety and default values
         const [
-            { count: projectsToday },
-            { count: totalCalls },
-            { count: pendingCallbacks },
-            { count: scheduledAppointments },
-            { count: totalCustomers },
-            { data: recentCalls }
+            projectsResult,
+            callsResult,
+            callbacksResult,
+            appointmentsResult,
+            customersResult,
+            recentCallsResult
         ] = await Promise.all([
             supabase.from('kfz_projects').select('*', { count: 'exact', head: true })
                 .eq('tenant_project_id', tenantProjectId)
@@ -763,11 +764,19 @@ app.get('/api/dashboard', async (req, res) => {
                 .limit(10)
         ]);
         
+        // FIXED: Safe extraction with null checks
+        const projectsToday = projectsResult?.count || 0;
+        const totalCalls = callsResult?.count || 0;
+        const pendingCallbacks = callbacksResult?.count || 0;
+        const scheduledAppointments = appointmentsResult?.count || 0;
+        const totalCustomers = customersResult?.count || 0;
+        const recentCalls = recentCallsResult?.data || [];
+        
         markPhase(req, 'dashboard_calculations_start');
         
-        // Calculate extraction success rate
-        const successfulExtractions = recentCalls.filter(call => 
-            call.extracted_data && 
+        // FIXED: Calculate extraction success rate with null safety
+        const successfulExtractions = (recentCalls || []).filter(call => 
+            call && call.extracted_data && 
             call.extracted_data.name && 
             call.extracted_data.phone
         ).length;
@@ -776,10 +785,10 @@ app.get('/api/dashboard', async (req, res) => {
             ? (successfulExtractions / recentCalls.length * 100).toFixed(1)
             : 0;
         
-        // Calculate average confidence score
-        const confidenceScores = recentCalls
-            .map(call => call.extracted_data?.confidence_score)
-            .filter(score => score !== undefined && score !== null);
+        // FIXED: Calculate average confidence score with null safety
+        const confidenceScores = (recentCalls || [])
+            .map(call => call && call.extracted_data ? call.extracted_data.confidence_score : null)
+            .filter(score => score !== undefined && score !== null && !isNaN(score));
         
         const averageConfidence = confidenceScores.length > 0
             ? (confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length).toFixed(2)
@@ -841,7 +850,7 @@ app.get('/api/dashboard', async (req, res) => {
 });
 
 // ================================
-// OTHER MONITORED ENDPOINTS
+// OTHER MONITORED ENDPOINTS - FIXED NULL HANDLING
 // ================================
 
 // Get customers with monitoring
@@ -859,8 +868,9 @@ app.get('/api/customers', async (req, res) => {
         markPhase(req, 'customers_query_complete');
         
         if (error) throw error;
-        res.json(data);
+        res.json(data || []); // FIXED: Default to empty array
     } catch (error) {
+        console.error('Customers API Error:', error);
         res.status(500).json({ error: error.message, request_id: req.requestId });
     }
 });
@@ -880,8 +890,9 @@ app.get('/api/projects', async (req, res) => {
         markPhase(req, 'projects_query_complete');
         
         if (error) throw error;
-        res.json(data);
+        res.json(data || []); // FIXED: Default to empty array
     } catch (error) {
+        console.error('Projects API Error:', error);
         res.status(500).json({ error: error.message, request_id: req.requestId });
     }
 });
@@ -901,8 +912,9 @@ app.get('/api/calls', async (req, res) => {
         markPhase(req, 'calls_query_complete');
         
         if (error) throw error;
-        res.json(data);
+        res.json(data || []); // FIXED: Default to empty array
     } catch (error) {
+        console.error('Calls API Error:', error);
         res.status(500).json({ error: error.message, request_id: req.requestId });
     }
 });
