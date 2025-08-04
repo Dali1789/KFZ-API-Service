@@ -14,62 +14,31 @@ const {
     createProject,
     saveCallRecord,
     scheduleAppointment,
-    logAnalyticsEvent
+    handleCallbackRequest,
+    logAnalyticsEvent,
+    testEmailConfiguration,
+    sendTestNotification,
+    sendNotificationEmail,
+    calendarService
 } = require('./lib/businessLogic');
-
-// Import performance monitoring
-const {
-    requestMonitoringMiddleware,
-    errorMonitoringMiddleware,
-    monitorExtraction,
-    monitorDatabaseOperation,
-    monitorWebhook,
-    markPhase,
-    monitor
-} = require('./lib/performanceMiddleware');
-
-// Import test routes for calendar and email testing
-const testRoutes = require('./routes/testRoutes');
 
 const app = express();
 
 // ================================
-// MIDDLEWARE WITH MONITORING
+// MIDDLEWARE
 // ================================
-app.use(helmet({
-    contentSecurityPolicy: {
-        directives: {
-            defaultSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'"],
-            scriptSrc: ["'self'", "'unsafe-inline'"],
-            imgSrc: ["'self'", "data:", "https:"],
-        },
-    },
-}));
+app.use(helmet());
 app.use(cors());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-
-// Serve static files from public directory
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
-// Add performance monitoring middleware
-app.use(requestMonitoringMiddleware);
-
 // ================================
-// TEST ROUTES INTEGRATION
-// ================================
-app.use('/api/test', testRoutes);
-
-// ================================
-// ENHANCED SUPABASE CLIENT WITH API KEY HEADERS
+// SUPABASE CLIENT
 // ================================
 const supabaseOptions = {
-    auth: {
-        persistSession: false,
-        autoRefreshToken: false
-    },
+    auth: { persistSession: false, autoRefreshToken: false },
     global: {
         headers: {
             'apikey': process.env.SUPABASE_SERVICE_KEY,
@@ -79,17 +48,6 @@ const supabaseOptions = {
         }
     }
 };
-
-// Add custom headers if configured
-if (process.env.SUPABASE_HEADERS) {
-    try {
-        const customHeaders = JSON.parse(process.env.SUPABASE_HEADERS);
-        supabaseOptions.global.headers = { ...supabaseOptions.global.headers, ...customHeaders };
-        console.log('🔑 Custom Supabase headers configured');
-    } catch (error) {
-        console.warn('⚠️ Invalid SUPABASE_HEADERS format:', error.message);
-    }
-}
 
 const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -104,170 +62,233 @@ console.log('🔗 Supabase Client initialized with:', {
 });
 
 // ================================
-// DASHBOARD ROUTES
+// ROUTES
 // ================================
 
-// Redirect root to dashboard
-app.get('/', (req, res) => {
-    res.redirect('/public/dashboard.html');
-});
+// Dashboard
+app.get('/', (req, res) => res.redirect('/public/dashboard.html'));
+app.get('/dashboard', (req, res) => res.redirect('/public/dashboard.html'));
+app.get('/ping', (req, res) => res.status(200).send('pong'));
 
-// Dashboard redirect
-app.get('/dashboard', (req, res) => {
-    res.redirect('/public/dashboard.html');
-});
-
-// ================================
-// HEALTH CHECK WITH PERFORMANCE METRICS
-// ================================
+// Health Check
 app.get('/health', async (req, res) => {
     try {
-        markPhase(req, 'health_check_start');
-        
         const healthData = {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
-            version: '3.3.0-calendar-email-integration',
-            environment: process.env.NODE_ENV || 'development',
-            services: {
-                database: { status: 'unknown', message: 'Testing...' },
-                email: { status: 'unknown', message: 'Testing...' },
-                retell: { status: 'unknown', message: 'Testing...' }
-            },
-            memory: {
-                used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB',
-                total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + ' MB'
-            }
+            version: '3.5.0',
+            services: { database: { status: 'unknown' }, email: { status: 'unknown' }, retell: { status: 'unknown' } }
         };
         
-        // Datenbank-Status prüfen mit verbesserter Fehlerbehandlung
+        // Database test
         try {
-            if (supabase) {
-                console.log('🔍 Testing database connection...');
-                const { data, error } = await supabase.from('kfz_customers').select('count', { count: 'exact', head: true });
-                
-                if (error) {
-                    console.error('❌ Database connection error:', error);
-                    healthData.services.database = {
-                        status: 'error',
-                        message: error.message,
-                        code: error.code || 'unknown',
-                        details: error.details || 'No additional details'
-                    };
-                } else {
-                    console.log('✅ Database connection successful');
-                    healthData.services.database = {
-                        status: 'healthy',
-                        message: 'Connected successfully',
-                        recordCount: data ? data.length : 0
-                    };
-                }
-            } else {
-                healthData.services.database = {
-                    status: 'error',
-                    message: 'Supabase client not initialized'
-                };
-            }
+            const { data, error } = await supabase.from('kfz_customers').select('count', { count: 'exact', head: true });
+            healthData.services.database = error 
+                ? { status: 'error', message: error.message }
+                : { status: 'healthy', message: 'Connected successfully' };
         } catch (dbError) {
-            console.error('❌ Database test failed:', dbError);
-            healthData.services.database = {
-                status: 'error',
-                message: dbError.message,
-                type: dbError.name || 'Unknown Error'
-            };
+            healthData.services.database = { status: 'error', message: dbError.message };
         }
         
-        // E-Mail & Kalender-Status prüfen
-        try {
-            const requiredEmailVars = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'OWNER_EMAIL'];
-            const missingVars = requiredEmailVars.filter(varName => !process.env[varName]);
-            
-            healthData.services.email = {
-                status: missingVars.length === 0 ? 'healthy' : 'warning',
-                message: missingVars.length === 0 
-                    ? `Email & Calendar configured for ${process.env.OWNER_EMAIL}` 
-                    : `Missing variables: ${missingVars.join(', ')}`,
-                config: {
-                    host: process.env.SMTP_HOST || 'not set',
-                    port: process.env.SMTP_PORT || 'not set',
-                    user: process.env.SMTP_USER || 'not set',
-                    recipient: process.env.OWNER_EMAIL || 'not set'
-                },
-                features: ['appointment_notifications', 'callback_alerts', 'calendar_integration', 'html_emails']
-            };
-        } catch (emailError) {
-            healthData.services.email = {
-                status: 'error',
-                message: emailError.message
-            };
-        }
+        // Email test
+        const requiredEmailVars = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'OWNER_EMAIL'];
+        const missingVars = requiredEmailVars.filter(varName => !process.env[varName]);
+        healthData.services.email = {
+            status: missingVars.length === 0 ? 'healthy' : 'warning',
+            message: missingVars.length === 0 ? `Configured for ${process.env.OWNER_EMAIL}` : `Missing: ${missingVars.join(', ')}`
+        };
         
-        // Retell-Status prüfen
-        try {
-            healthData.services.retell = {
-                status: process.env.RETELL_API_KEY ? 'healthy' : 'warning',
-                message: process.env.RETELL_API_KEY ? 'API key configured' : 'API key missing',
-                webhookUrl: req.protocol + '://' + req.get('host') + '/api/retell/webhook'
-            };
-        } catch (retellError) {
-            healthData.services.retell = {
-                status: 'error',
-                message: retellError.message
-            };
-        }
+        // Retell test
+        healthData.services.retell = {
+            status: process.env.RETELL_API_KEY ? 'healthy' : 'warning',
+            message: process.env.RETELL_API_KEY ? 'API key configured' : 'API key missing'
+        };
         
-        // Gesamtstatus bestimmen
-        const serviceStatuses = Object.values(healthData.services).map(s => s.status);
-        if (serviceStatuses.includes('error')) {
-            healthData.status = 'degraded';
-        } else if (serviceStatuses.includes('warning')) {
-            healthData.status = 'warning';
-        }
-        
-        const performanceHealthData = monitor.getHealthCheck();
-        
-        markPhase(req, 'health_check_complete');
-        
-        // Response Status Code basierend auf Gesundheit
-        const statusCode = healthData.status === 'healthy' ? 200 : 
-                          healthData.status === 'warning' ? 200 : 503;
-        
-        res.status(statusCode).json({
-            ...healthData,
-            ...performanceHealthData,
-            service: 'KFZ-Sachverständiger API',
-            features: [
-                'advanced_natural_language_processing', 
-                'multi_layered_extraction', 
-                'confidence_scoring',
-                'intelligent_validation',
-                'modular_architecture',
-                'real_time_performance_monitoring',
-                'health_checks',
-                'error_tracking',
-                'web_dashboard',
-                'gmail_api_integration',
-                'kong_api_gateway_auth',
-                'calendar_integration',
-                'email_notifications',
-                'appointment_scheduling',
-                'callback_management'
-            ]
-        });
+        const statusCode = Object.values(healthData.services).some(s => s.status === 'error') ? 503 : 200;
+        res.status(statusCode).json(healthData);
         
     } catch (error) {
-        console.error('❌ Health Check Fehler:', error);
-        res.status(503).json({
-            status: 'error',
-            timestamp: new Date().toISOString(),
-            error: error.message,
-            message: 'Health check failed'
-        });
+        res.status(503).json({ status: 'error', error: error.message, timestamp: new Date().toISOString() });
     }
 });
 
-// Restliche Endpoints bleiben unverändert...
-// (Der rest der server.js bleibt wie vorher - zu groß für eine Antwort)
+// Main Webhook
+app.post('/api/retell/webhook', async (req, res) => {
+    try {
+        const { call_id, transcript, duration_seconds, call_status } = req.body;
+        
+        console.log('📞 Webhook:', { call_id, call_status, transcript_length: transcript?.length || 0 });
+        
+        const tenantProjectId = await getTenantProjectId(supabase);
+        if (!tenantProjectId) throw new Error('Tenant project not found');
+        
+        const extractedData = extractCustomerDataIntelligent(transcript);
+        
+        if (extractedData && extractedData.name && extractedData.phone) {
+            const customer = await createOrUpdateCustomer(extractedData, tenantProjectId, supabase);
+            const project = await createProject(customer, extractedData, tenantProjectId, supabase);
+            
+            await saveCallRecord(call_id, transcript, duration_seconds, customer.id, project.id, extractedData, tenantProjectId, supabase);
+            
+            let appointment = null;
+            if (extractedData.type === 'APPOINTMENT' && extractedData.address) {
+                appointment = await scheduleAppointment(customer, project, extractedData, tenantProjectId, supabase);
+            }
+            
+            if (extractedData.type === 'CALLBACK') {
+                await handleCallbackRequest(customer, project, extractedData, tenantProjectId, supabase);
+            }
+            
+            res.json({ 
+                success: true, 
+                message: 'Webhook processed successfully',
+                data: {
+                    customer: customer.customer_number,
+                    project: project.project_number,
+                    type: extractedData.type,
+                    appointment_scheduled: !!appointment
+                }
+            });
+        } else {
+            await supabase.from('kfz_calls').insert({
+                tenant_project_id: tenantProjectId,
+                retell_call_id: call_id,
+                call_type: 'inbound',
+                duration_seconds,
+                transcript,
+                call_purpose: 'data_extraction_failed',
+                call_outcome: 'requires_manual_review'
+            });
+            
+            res.json({ success: true, message: 'Call logged for manual review', requires_manual_review: true });
+        }
+        
+    } catch (error) {
+        console.error('❌ Webhook Error:', error);
+        res.status(500).json({ error: error.message, call_id: req.body.call_id });
+    }
+});
+
+// Test Endpoints
+app.get('/api/test/email', async (req, res) => {
+    try {
+        const result = await testEmailConfiguration();
+        res.json({ success: result.success, details: result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.post('/api/test/notification', async (req, res) => {
+    try {
+        const { type = 'appointment' } = req.body;
+        const result = await sendTestNotification(type);
+        res.json({ success: result.success, messageId: result.messageId });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// API Endpoints
+app.get('/api/customers', async (req, res) => {
+    try {
+        const tenantProjectId = await getTenantProjectId(supabase);
+        const { data, error } = await supabase.from('kfz_customers').select('*').eq('tenant_project_id', tenantProjectId);
+        if (error) throw error;
+        res.json(data || []);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/projects', async (req, res) => {
+    try {
+        const tenantProjectId = await getTenantProjectId(supabase);
+        const { data, error } = await supabase.from('kfz_projects').select('*').eq('tenant_project_id', tenantProjectId);
+        if (error) throw error;
+        res.json(data || []);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/calls', async (req, res) => {
+    try {
+        const tenantProjectId = await getTenantProjectId(supabase);
+        const { data, error } = await supabase.from('kfz_calls').select('*').eq('tenant_project_id', tenantProjectId);
+        if (error) throw error;
+        res.json(data || []);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Dashboard Data
+app.get('/api/dashboard', async (req, res) => {
+    try {
+        const tenantProjectId = await getTenantProjectId(supabase);
+        const today = new Date().toISOString().split('T')[0];
+        
+        const [projects, calls, customers, appointments] = await Promise.all([
+            supabase.from('kfz_projects').select('*', { count: 'exact', head: true }).eq('tenant_project_id', tenantProjectId),
+            supabase.from('kfz_calls').select('*', { count: 'exact', head: true }).eq('tenant_project_id', tenantProjectId),
+            supabase.from('kfz_customers').select('*', { count: 'exact', head: true }).eq('tenant_project_id', tenantProjectId),
+            supabase.from('kfz_appointments').select('*', { count: 'exact', head: true }).eq('tenant_project_id', tenantProjectId)
+        ]);
+        
+        res.json({
+            totals: {
+                projects: projects.count || 0,
+                calls: calls.count || 0,
+                customers: customers.count || 0,
+                appointments: appointments.count || 0
+            },
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 404 Handler
+app.use('*', (req, res) => {
+    res.status(404).json({
+        error: 'Not Found',
+        message: `Route ${req.method} ${req.originalUrl} not found`,
+        availableEndpoints: [
+            'GET /health', 'GET /ping', 'POST /api/retell/webhook',
+            'GET /api/customers', 'GET /api/projects', 'GET /api/calls',
+            'GET /api/dashboard', 'GET /api/test/email', 'POST /api/test/notification'
+        ]
+    });
+});
+
+// ================================
+// SERVER START
+// ================================
+const PORT = process.env.PORT || 3000;
+
+process.on('SIGTERM', () => {
+    console.log('🛑 SIGTERM received, shutting down gracefully...');
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('🛑 SIGINT received, shutting down gracefully...');
+    process.exit(0);
+});
+
+app.listen(PORT, () => {
+    console.log('🚀 KFZ-Sachverständiger API läuft auf Port', PORT);
+    console.log(`🌐 Dashboard: http://localhost:${PORT}/dashboard`);
+    console.log(`🩺 Health: http://localhost:${PORT}/health`);
+    console.log(`🔗 Webhook: http://localhost:${PORT}/api/retell/webhook`);
+    console.log(`📧 E-Mail Test: http://localhost:${PORT}/api/test/email`);
+    console.log('💾 Database: Connected');
+    console.log('🧠 Enhanced Multi-Layer Data Extraction Ready!');
+    console.log('📧 E-Mail Notifications: ACTIVE');
+    console.log('📅 Calendar Integration: ACTIVE');
+});
 
 module.exports = app;
