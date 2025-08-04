@@ -104,21 +104,7 @@
         .status-healthy { background-color: #10b981; }
         .status-warning { background-color: #f59e0b; }
         .status-unhealthy { background-color: #ef4444; }
-        
-        .progress-bar {
-            width: 100%;
-            height: 8px;
-            background-color: #e5e7eb;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 5px;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #10b981, #059669);
-            transition: width 0.3s ease;
-        }
+        .status-unknown { background-color: #6b7280; }
         
         .refresh-btn {
             background: linear-gradient(135deg, #4f46e5, #7c3aed);
@@ -141,41 +127,19 @@
             box-shadow: 0 5px 15px rgba(79, 70, 229, 0.4);
         }
         
-        .error-log {
-            max-height: 200px;
-            overflow-y: auto;
-            background: #fef2f2;
+        .refresh-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .error-message {
+            background: #fee2e2;
             border: 1px solid #fecaca;
-            border-radius: 8px;
+            color: #dc2626;
             padding: 15px;
-        }
-        
-        .error-item {
-            margin-bottom: 10px;
-            padding: 8px;
-            background: white;
-            border-radius: 4px;
-            border-left: 3px solid #ef4444;
-        }
-        
-        .timestamp {
-            font-size: 0.8rem;
-            color: #6b7280;
-            margin-bottom: 5px;
-        }
-        
-        .charts-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-            margin-top: 30px;
-        }
-        
-        .chart-card {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            margin: 15px 0;
         }
         
         .loading {
@@ -209,6 +173,22 @@
         .icon {
             font-size: 1.2rem;
         }
+        
+        .data-unavailable {
+            color: #6b7280;
+            font-style: italic;
+        }
+        
+        .debug-info {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 0.8rem;
+            font-family: monospace;
+            color: #4b5563;
+        }
     </style>
 </head>
 <body>
@@ -218,7 +198,7 @@
             <p>Real-time Monitoring & Analytics für Ihre intelligente KFZ-API</p>
         </div>
 
-        <button class="refresh-btn" onclick="refreshData()">
+        <button class="refresh-btn" onclick="refreshData()" id="refreshBtn">
             <span class="icon">🔄</span>
             Dashboard aktualisieren
         </button>
@@ -227,6 +207,8 @@
             <div class="spinner"></div>
             <p>Performance-Daten werden geladen...</p>
         </div>
+
+        <div id="error" class="error-message" style="display: none;"></div>
 
         <div id="dashboard" style="display: none;">
             <!-- System Health -->
@@ -260,9 +242,15 @@
                 </div>
 
                 <div class="card">
-                    <h3><span class="icon">❌</span> Error Log</h3>
-                    <div id="error-log" class="error-log"></div>
+                    <h3><span class="icon">📊</span> API Status</h3>
+                    <div id="api-status"></div>
                 </div>
+            </div>
+
+            <!-- Debug Information -->
+            <div class="card">
+                <h3><span class="icon">🔍</span> Debug Information</h3>
+                <div id="debug-info"></div>
             </div>
         </div>
 
@@ -273,28 +261,64 @@
 
     <script>
         let refreshInterval;
+        let lastError = null;
 
-        async function fetchPerformanceData() {
+        function safeGet(obj, path, defaultValue = 'N/A') {
             try {
-                const [healthResponse, performanceResponse, dashboardResponse] = await Promise.all([
-                    fetch('/health'),
-                    fetch('/api/performance'),
-                    fetch('/api/dashboard')
-                ]);
-
-                const healthData = await healthResponse.json();
-                const performanceData = await performanceResponse.json();
-                const dashboardData = await dashboardResponse.json();
-
-                return { healthData, performanceData, dashboardData };
-            } catch (error) {
-                console.error('Error fetching data:', error);
-                throw error;
+                return path.split('.').reduce((o, p) => o && o[p], obj) || defaultValue;
+            } catch (e) {
+                return defaultValue;
             }
         }
 
+        async function fetchPerformanceData() {
+            const results = {};
+            const errors = {};
+
+            try {
+                console.log('Fetching health data...');
+                const healthResponse = await fetch('/health');
+                if (healthResponse.ok) {
+                    results.healthData = await healthResponse.json();
+                } else {
+                    errors.health = `HTTP ${healthResponse.status}`;
+                }
+            } catch (error) {
+                console.error('Health fetch error:', error);
+                errors.health = error.message;
+            }
+
+            try {
+                console.log('Fetching performance data...');
+                const performanceResponse = await fetch('/api/performance');
+                if (performanceResponse.ok) {
+                    results.performanceData = await performanceResponse.json();
+                } else {
+                    errors.performance = `HTTP ${performanceResponse.status}`;
+                }
+            } catch (error) {
+                console.error('Performance fetch error:', error);
+                errors.performance = error.message;
+            }
+
+            try {
+                console.log('Fetching dashboard data...');
+                const dashboardResponse = await fetch('/api/dashboard');
+                if (dashboardResponse.ok) {
+                    results.dashboardData = await dashboardResponse.json();
+                } else {
+                    errors.dashboard = `HTTP ${dashboardResponse.status}`;
+                }
+            } catch (error) {
+                console.error('Dashboard fetch error:', error);
+                errors.dashboard = error.message;
+            }
+
+            return { results, errors };
+        }
+
         function formatBytes(bytes) {
-            if (bytes === 0) return '0 Bytes';
+            if (!bytes || bytes === 0) return '0 Bytes';
             const k = 1024;
             const sizes = ['Bytes', 'KB', 'MB', 'GB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -302,6 +326,7 @@
         }
 
         function formatDuration(seconds) {
+            if (!seconds) return 'N/A';
             const hours = Math.floor(seconds / 3600);
             const minutes = Math.floor((seconds % 3600) / 60);
             const secs = Math.floor(seconds % 60);
@@ -312,135 +337,186 @@
         }
 
         function getStatusClass(status) {
-            switch (status) {
-                case 'healthy': return 'status-healthy';
-                case 'degraded': return 'status-warning';
-                case 'unhealthy': return 'status-unhealthy';
-                default: return 'status-warning';
+            if (!status) return 'status-unknown';
+            switch (status.toLowerCase()) {
+                case 'healthy': case 'ok': return 'status-healthy';
+                case 'degraded': case 'warning': return 'status-warning';
+                case 'unhealthy': case 'error': return 'status-unhealthy';
+                default: return 'status-unknown';
             }
         }
 
         function createMetric(label, value, unit = '') {
+            const displayValue = value !== null && value !== undefined ? `${value}${unit}` : 'N/A';
             return `
                 <div class="metric">
                     <span class="metric-label">${label}</span>
-                    <span class="metric-value">${value}${unit}</span>
-                </div>
-            `;
-        }
-
-        function createProgressMetric(label, value, max, unit = '') {
-            const percentage = Math.min((value / max) * 100, 100);
-            return `
-                <div class="metric">
-                    <div style="width: 100%;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                            <span class="metric-label">${label}</span>
-                            <span class="metric-value">${value}${unit}</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${percentage}%"></div>
-                        </div>
-                    </div>
+                    <span class="metric-value">${displayValue}</span>
                 </div>
             `;
         }
 
         function updateDashboard(data) {
-            const { healthData, performanceData, dashboardData } = data;
+            const { results, errors } = data;
+            const { healthData, performanceData, dashboardData } = results;
+
+            console.log('Updating dashboard with:', { healthData, performanceData, dashboardData });
 
             // System Health
+            const systemStatus = safeGet(healthData, 'status', 'unknown');
+            const uptime = safeGet(performanceData, 'system.uptimeFormatted') || 
+                          safeGet(healthData, 'metrics.system.uptimeFormatted') ||
+                          formatDuration(safeGet(healthData, 'system_info.uptime'));
+            
             document.getElementById('system-health').innerHTML = `
                 <div class="metric">
                     <span class="metric-label">
-                        <span class="status-indicator ${getStatusClass(healthData.status)}"></span>
+                        <span class="status-indicator ${getStatusClass(systemStatus)}"></span>
                         Status
                     </span>
-                    <span class="metric-value">${healthData.status.toUpperCase()}</span>
+                    <span class="metric-value">${systemStatus.toUpperCase()}</span>
                 </div>
-                ${createMetric('Uptime', performanceData.system.uptimeFormatted)}
-                ${createMetric('Node Version', performanceData.system.nodeVersion)}
-                ${createMetric('Plattform', `${performanceData.system.platform} ${performanceData.system.arch}`)}
+                ${createMetric('Uptime', uptime)}
+                ${createMetric('Node Version', safeGet(healthData, 'system_info.node_version') || safeGet(performanceData, 'system.nodeVersion'))}
+                ${createMetric('Plattform', `${safeGet(healthData, 'system_info.platform', 'unknown')} ${safeGet(healthData, 'system_info.arch', '')}`)}
             `;
 
             // Performance Metrics
+            const totalRequests = safeGet(performanceData, 'performance.totalRequests') || 
+                                safeGet(healthData, 'metrics.performance.totalRequests', 0);
+            const errorRate = safeGet(performanceData, 'performance.errorRate') || 
+                            safeGet(healthData, 'metrics.performance.errorRate', '0');
+            const avgRequestTime = safeGet(performanceData, 'performance.avgRequestTime') || 
+                                 safeGet(healthData, 'metrics.performance.avgRequestTime', 0);
+            const avgExtractionTime = safeGet(performanceData, 'performance.avgExtractionTime') || 
+                                    safeGet(healthData, 'metrics.performance.avgExtractionTime', 0);
+            const extractionSuccessRate = safeGet(performanceData, 'performance.extractionSuccessRate') || 
+                                        safeGet(dashboardData, 'extraction_analytics.success_rate', '0%');
+
             document.getElementById('performance-metrics').innerHTML = `
-                ${createMetric('Requests Total', performanceData.performance.totalRequests)}
-                ${createMetric('Error Rate', performanceData.performance.errorRate, '%')}
-                ${createMetric('Avg Request Time', performanceData.performance.avgRequestTime, 'ms')}
-                ${createMetric('Avg Extraction Time', performanceData.performance.avgExtractionTime, 'ms')}
-                ${createMetric('Extraction Success', performanceData.performance.extractionSuccessRate)}
+                ${createMetric('Requests Total', totalRequests)}
+                ${createMetric('Error Rate', errorRate, typeof errorRate === 'string' ? '' : '%')}
+                ${createMetric('Avg Request Time', avgRequestTime, 'ms')}
+                ${createMetric('Avg Extraction Time', avgExtractionTime, 'ms')}
+                ${createMetric('Extraction Success', extractionSuccessRate)}
             `;
 
-            // Memory Metrics  
-            const memoryData = performanceData.memory;
+            // Memory Metrics
+            const memoryData = safeGet(performanceData, 'memory') || safeGet(healthData, 'metrics.memory') || {};
+            const currentMemory = safeGet(healthData, 'system_info.memory') || {};
+            
             document.getElementById('memory-metrics').innerHTML = `
-                ${createMetric('Heap Used', memoryData.heapUsed)}
-                ${createMetric('Heap Total', memoryData.heapTotal)}
-                ${createMetric('External', memoryData.external)}
-                ${createMetric('RSS', memoryData.rss)}
+                ${createMetric('Heap Used', memoryData.heapUsed || formatBytes(currentMemory.heapUsed))}
+                ${createMetric('Heap Total', memoryData.heapTotal || formatBytes(currentMemory.heapTotal))}
+                ${createMetric('External', memoryData.external || formatBytes(currentMemory.external))}
+                ${createMetric('RSS', memoryData.rss || formatBytes(currentMemory.rss))}
             `;
 
             // Extraction Analytics
+            const extractionAnalytics = safeGet(dashboardData, 'extraction_analytics') || {};
+            const recentStats = safeGet(performanceData, 'recent') || {};
+            
             document.getElementById('extraction-metrics').innerHTML = `
-                ${createMetric('Success Rate', dashboardData.extraction_analytics.success_rate)}
-                ${createMetric('Avg Confidence', dashboardData.extraction_analytics.average_confidence)}
-                ${createMetric('Processed Today', dashboardData.extraction_analytics.total_processed)}
-                ${createMetric('Erfolgreiche Calls', performanceData.recent.successfulExtractions)}
+                ${createMetric('Success Rate', extractionAnalytics.success_rate || 'N/A')}
+                ${createMetric('Avg Confidence', extractionAnalytics.average_confidence || 'N/A')}
+                ${createMetric('Processed Today', extractionAnalytics.total_processed || 0)}
+                ${createMetric('Successful Extractions', recentStats.successfulExtractions || 0)}
             `;
 
             // Recent Activity
+            const todayStats = safeGet(dashboardData, 'today') || {};
+            const pendingStats = safeGet(dashboardData, 'pending') || {};
+            const totalStats = safeGet(dashboardData, 'totals') || {};
+            
             document.getElementById('recent-activity').innerHTML = `
-                ${createMetric('Projekte heute', dashboardData.today.projects)}
-                ${createMetric('Calls heute', dashboardData.today.calls)}
-                ${createMetric('Pending Callbacks', dashboardData.pending.callbacks)}
-                ${createMetric('Geplante Termine', dashboardData.pending.appointments)}
-                ${createMetric('Kunden gesamt', dashboardData.totals.customers)}
+                ${createMetric('Projekte heute', todayStats.projects || 0)}
+                ${createMetric('Calls heute', todayStats.calls || 0)}
+                ${createMetric('Pending Callbacks', pendingStats.callbacks || 0)}
+                ${createMetric('Geplante Termine', pendingStats.appointments || 0)}
+                ${createMetric('Kunden gesamt', totalStats.customers || 0)}
             `;
 
-            // Error Log (simplified)
-            const errorLog = document.getElementById('error-log');
-            if (performanceData.recent.errors > 0) {
-                errorLog.innerHTML = `
-                    <div class="error-item">
-                        <div class="timestamp">Letzte Stunde</div>
-                        <div>${performanceData.recent.errors} Fehler aufgetreten</div>
-                    </div>
-                `;
-            } else {
-                errorLog.innerHTML = `
-                    <div style="text-align: center; color: #10b981; padding: 20px;">
-                        <span style="font-size: 1.5rem;">✅</span><br>
-                        Keine Fehler in der letzten Stunde
-                    </div>
-                `;
-            }
+            // API Status
+            document.getElementById('api-status').innerHTML = `
+                ${createMetric('Service Version', safeGet(dashboardData, 'system.version') || safeGet(healthData, 'version', 'Unknown'))}
+                ${createMetric('Environment', safeGet(healthData, 'environment.node_env', 'Unknown'))}
+                ${createMetric('Database', safeGet(healthData, 'environment.has_supabase_url') ? 'Connected' : 'Not Connected')}
+                ${createMetric('Last Updated', new Date().toLocaleTimeString('de-DE'))}
+            `;
+
+            // Debug Information
+            const debugInfo = {
+                'Available Data': Object.keys(results),
+                'Errors': Object.keys(errors).length > 0 ? errors : 'None',
+                'Health Data Keys': healthData ? Object.keys(healthData) : 'None',
+                'Performance Data Keys': performanceData ? Object.keys(performanceData) : 'None',
+                'Dashboard Data Keys': dashboardData ? Object.keys(dashboardData) : 'None'
+            };
+
+            document.getElementById('debug-info').innerHTML = `
+                <div class="debug-info">
+                    ${JSON.stringify(debugInfo, null, 2)}
+                </div>
+            `;
 
             // Show dashboard
             document.getElementById('loading').style.display = 'none';
+            document.getElementById('error').style.display = 'none';
             document.getElementById('dashboard').style.display = 'block';
         }
 
         async function refreshData() {
+            const refreshBtn = document.getElementById('refreshBtn');
+            const loadingDiv = document.getElementById('loading');
+            const errorDiv = document.getElementById('error');
+
             try {
-                document.getElementById('loading').style.display = 'block';
+                refreshBtn.disabled = true;
+                refreshBtn.innerHTML = '<span class="spinner" style="width: 16px; height: 16px; margin-right: 8px;"></span> Lädt...';
+                
+                loadingDiv.style.display = 'block';
+                errorDiv.style.display = 'none';
+
                 const data = await fetchPerformanceData();
+                
+                if (Object.keys(data.results).length === 0) {
+                    throw new Error('Keine Daten von der API erhalten. Überprüfen Sie die URL und Netzwerkverbindung.');
+                }
+
                 updateDashboard(data);
+                lastError = null;
+
             } catch (error) {
-                document.getElementById('loading').innerHTML = `
-                    <div style="color: #ef4444;">
-                        <span style="font-size: 2rem;">❌</span><br>
-                        Fehler beim Laden der Daten: ${error.message}
-                    </div>
+                console.error('Dashboard Error:', error);
+                lastError = error;
+                
+                loadingDiv.style.display = 'none';
+                errorDiv.style.display = 'block';
+                errorDiv.innerHTML = `
+                    <strong>Fehler beim Laden der Daten:</strong><br>
+                    ${error.message}<br><br>
+                    <small>
+                        <strong>Mögliche Lösungen:</strong><br>
+                        • Überprüfen Sie ob die API läuft: <a href="/health" target="_blank">/health</a><br>
+                        • Prüfen Sie die Browser-Konsole (F12) für Details<br>
+                        • Versuchen Sie es in ein paar Sekunden erneut
+                    </small>
                 `;
+            } finally {
+                refreshBtn.disabled = false;
+                refreshBtn.innerHTML = '<span class="icon">🔄</span> Dashboard aktualisieren';
             }
         }
 
         // Initial load
-        refreshData();
+        document.addEventListener('DOMContentLoaded', refreshData);
 
-        // Auto-refresh every 30 seconds
-        refreshInterval = setInterval(refreshData, 30000);
+        // Auto-refresh every 30 seconds, but only if no error
+        refreshInterval = setInterval(() => {
+            if (!lastError) {
+                refreshData();
+            }
+        }, 30000);
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
