@@ -54,11 +54,46 @@ app.use('/public', express.static(path.join(__dirname, 'public')));
 // Add performance monitoring middleware
 app.use(requestMonitoringMiddleware);
 
-// Supabase Client
+// ================================
+// ENHANCED SUPABASE CLIENT WITH API KEY HEADERS
+// ================================
+const supabaseOptions = {
+    auth: {
+        persistSession: false,
+        autoRefreshToken: false
+    },
+    global: {
+        headers: {
+            'apikey': process.env.SUPABASE_SERVICE_KEY,
+            'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
+        }
+    }
+};
+
+// Add custom headers if configured
+if (process.env.SUPABASE_HEADERS) {
+    try {
+        const customHeaders = JSON.parse(process.env.SUPABASE_HEADERS);
+        supabaseOptions.global.headers = { ...supabaseOptions.global.headers, ...customHeaders };
+        console.log('🔑 Custom Supabase headers configured');
+    } catch (error) {
+        console.warn('⚠️ Invalid SUPABASE_HEADERS format:', error.message);
+    }
+}
+
 const supabase = createClient(
     process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
+    process.env.SUPABASE_SERVICE_KEY,
+    supabaseOptions
 );
+
+console.log('🔗 Supabase Client initialized with:', {
+    url: process.env.SUPABASE_URL,
+    hasServiceKey: !!process.env.SUPABASE_SERVICE_KEY,
+    headers: Object.keys(supabaseOptions.global.headers)
+});
 
 // ================================
 // DASHBOARD ROUTES
@@ -85,7 +120,7 @@ app.get('/health', async (req, res) => {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
-            version: '3.2.0-performance-monitored',
+            version: '3.2.1-kong-auth-fixed',
             environment: process.env.NODE_ENV || 'development',
             services: {
                 database: { status: 'unknown', message: 'Testing...' },
@@ -98,15 +133,28 @@ app.get('/health', async (req, res) => {
             }
         };
         
-        // Datenbank-Status prüfen
+        // Datenbank-Status prüfen mit verbesserter Fehlerbehandlung
         try {
             if (supabase) {
+                console.log('🔍 Testing database connection...');
                 const { data, error } = await supabase.from('kfz_customers').select('count', { count: 'exact', head: true });
-                healthData.services.database = {
-                    status: error ? 'error' : 'healthy',
-                    message: error ? error.message : 'Connected successfully',
-                    recordCount: data ? data.length : 0
-                };
+                
+                if (error) {
+                    console.error('❌ Database connection error:', error);
+                    healthData.services.database = {
+                        status: 'error',
+                        message: error.message,
+                        code: error.code || 'unknown',
+                        details: error.details || 'No additional details'
+                    };
+                } else {
+                    console.log('✅ Database connection successful');
+                    healthData.services.database = {
+                        status: 'healthy',
+                        message: 'Connected successfully',
+                        recordCount: data ? data.length : 0
+                    };
+                }
             } else {
                 healthData.services.database = {
                     status: 'error',
@@ -114,9 +162,11 @@ app.get('/health', async (req, res) => {
                 };
             }
         } catch (dbError) {
+            console.error('❌ Database test failed:', dbError);
             healthData.services.database = {
                 status: 'error',
-                message: dbError.message
+                message: dbError.message,
+                type: dbError.name || 'Unknown Error'
             };
         }
         
@@ -188,7 +238,8 @@ app.get('/health', async (req, res) => {
                 'health_checks',
                 'error_tracking',
                 'web_dashboard',
-                'gmail_api_integration'
+                'gmail_api_integration',
+                'kong_api_gateway_auth'
             ]
         });
         
@@ -250,13 +301,81 @@ app.get('/api/health/detailed', (req, res) => {
             has_supabase_url: !!process.env.SUPABASE_URL,
             has_supabase_key: !!process.env.SUPABASE_SERVICE_KEY,
             has_retell_key: !!process.env.RETELL_API_KEY,
-            has_smtp_config: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
+            has_smtp_config: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
+            has_custom_headers: !!process.env.SUPABASE_HEADERS
         }
     };
     
     markPhase(req, 'detailed_health_complete');
     
     res.json(detailedHealth);
+});
+
+// ================================
+// KONG CONNECTION TEST ENDPOINT
+// ================================
+app.get('/api/test/kong', async (req, res) => {
+    try {
+        console.log('🧪 Kong Connection Test gestartet...');
+        
+        const testResults = {
+            timestamp: new Date().toISOString(),
+            supabase_url: process.env.SUPABASE_URL,
+            has_service_key: !!process.env.SUPABASE_SERVICE_KEY,
+            has_custom_headers: !!process.env.SUPABASE_HEADERS,
+            tests: []
+        };
+        
+        // Test 1: Simple query
+        try {
+            console.log('🔍 Testing simple query...');
+            const { data, error } = await supabase.from('kfz_customers').select('count', { count: 'exact', head: true });
+            testResults.tests.push({
+                name: 'Simple Query',
+                success: !error,
+                error: error?.message || null,
+                data: data ? 'Data received' : 'No data'
+            });
+        } catch (queryError) {
+            testResults.tests.push({
+                name: 'Simple Query',
+                success: false,
+                error: queryError.message,
+                type: queryError.name
+            });
+        }
+        
+        // Test 2: Tenant Project ID
+        try {
+            console.log('🔍 Testing tenant project lookup...');
+            const tenantProjectId = await getTenantProjectId(supabase);
+            testResults.tests.push({
+                name: 'Tenant Project Lookup',
+                success: !!tenantProjectId,
+                tenantProjectId: tenantProjectId || 'Not found'
+            });
+        } catch (tenantError) {
+            testResults.tests.push({
+                name: 'Tenant Project Lookup',
+                success: false,
+                error: tenantError.message
+            });
+        }
+        
+        res.json({
+            success: true,
+            message: 'Kong connection test completed',
+            results: testResults
+        });
+        
+    } catch (error) {
+        console.error('❌ Kong Test Fehler:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
 });
 
 // ================================
@@ -471,7 +590,7 @@ app.get('/ping', (req, res) => {
 app.get('/api/info', (req, res) => {
   res.json({
     service: 'KFZ-Sachverständiger API',
-    version: '3.2.0-performance-monitored',
+    version: '3.2.1-kong-auth-fixed',
     description: 'API für automatisierte Kundentermin-Buchungen mit Retell AI Integration und Gmail API',
     endpoints: {
       health: '/health',
@@ -487,7 +606,8 @@ app.get('/api/info', (req, res) => {
         email: '/api/test/email',
         notification: '/api/test/notification',
         system: '/api/test/system',
-        webhook: '/api/test/webhook'
+        webhook: '/api/test/webhook',
+        kong: '/api/test/kong'
       }
     },
     features: [
@@ -500,7 +620,8 @@ app.get('/api/info', (req, res) => {
       'health_checks',
       'error_tracking',
       'web_dashboard',
-      'gmail_api_integration'
+      'gmail_api_integration',
+      'kong_api_gateway_authentication'
     ],
     timestamp: new Date().toISOString()
   });
@@ -824,7 +945,7 @@ app.get('/api/dashboard', async (req, res) => {
                 uptime: performanceData.system.uptimeFormatted
             },
             system: {
-                version: '3.2.0-performance-monitored',
+                version: '3.2.1-kong-auth-fixed',
                 features: [
                     'advanced_nlp',
                     'multi_layer_extraction',
@@ -833,7 +954,8 @@ app.get('/api/dashboard', async (req, res) => {
                     'real_time_monitoring',
                     'performance_analytics',
                     'web_dashboard',
-                    'gmail_api_integration'
+                    'gmail_api_integration',
+                    'kong_authentication'
                 ]
             },
             lastUpdated: new Date().toISOString(),
@@ -941,7 +1063,8 @@ app.use('*', (req, res) => {
       'GET /api/test/email',
       'POST /api/test/notification',
       'GET /api/test/system',
-      'POST /api/test/webhook'
+      'POST /api/test/webhook',
+      'GET /api/test/kong'
     ]
   });
 });
@@ -976,6 +1099,7 @@ app.listen(PORT, () => {
     console.log(`🩺 Health: http://localhost:${PORT}/health`);
     console.log(`🔗 Webhook: http://localhost:${PORT}/api/retell/webhook`);
     console.log(`📧 Gmail Test: http://localhost:${PORT}/api/test/email`);
+    console.log(`🔑 Kong Test: http://localhost:${PORT}/api/test/kong`);
     console.log('💾 Database: Connected');
     console.log('🧠 Enhanced Multi-Layer Data Extraction Ready!');
     console.log('🎯 Advanced Natural Language Processing Active!');
@@ -985,6 +1109,7 @@ app.listen(PORT, () => {
     console.log('🩺 Health Checks & Error Tracking: ACTIVE');
     console.log('🌐 Web Dashboard Interface: ACTIVE');
     console.log('📧 Gmail API Integration: ACTIVE');
+    console.log('🔑 Kong API Gateway Authentication: ACTIVE');
     
     // Log initial system health
     setTimeout(() => {
