@@ -77,29 +77,130 @@ app.get('/dashboard', (req, res) => {
 // ================================
 // HEALTH CHECK WITH PERFORMANCE METRICS
 // ================================
-app.get('/health', (req, res) => {
-    markPhase(req, 'health_check_start');
-    
-    const healthData = monitor.getHealthCheck();
-    
-    markPhase(req, 'health_check_complete');
-    
-    res.json({
-        ...healthData,
-        service: 'KFZ-Sachverständiger API',
-        version: '3.2.0-performance-monitored',
-        features: [
-            'advanced_natural_language_processing', 
-            'multi_layered_extraction', 
-            'confidence_scoring',
-            'intelligent_validation',
-            'modular_architecture',
-            'real_time_performance_monitoring',
-            'health_checks',
-            'error_tracking',
-            'web_dashboard'
-        ]
-    });
+app.get('/health', async (req, res) => {
+    try {
+        markPhase(req, 'health_check_start');
+        
+        const healthData = {
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime(),
+            version: '3.2.0-performance-monitored',
+            environment: process.env.NODE_ENV || 'development',
+            services: {
+                database: { status: 'unknown', message: 'Testing...' },
+                email: { status: 'unknown', message: 'Testing...' },
+                retell: { status: 'unknown', message: 'Testing...' }
+            },
+            memory: {
+                used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + ' MB',
+                total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + ' MB'
+            }
+        };
+        
+        // Datenbank-Status prüfen
+        try {
+            if (supabase) {
+                const { data, error } = await supabase.from('kfz_customers').select('count', { count: 'exact', head: true });
+                healthData.services.database = {
+                    status: error ? 'error' : 'healthy',
+                    message: error ? error.message : 'Connected successfully',
+                    recordCount: data ? data.length : 0
+                };
+            } else {
+                healthData.services.database = {
+                    status: 'error',
+                    message: 'Supabase client not initialized'
+                };
+            }
+        } catch (dbError) {
+            healthData.services.database = {
+                status: 'error',
+                message: dbError.message
+            };
+        }
+        
+        // E-Mail-Status prüfen
+        try {
+            const requiredEmailVars = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'OWNER_EMAIL'];
+            const missingVars = requiredEmailVars.filter(varName => !process.env[varName]);
+            
+            healthData.services.email = {
+                status: missingVars.length === 0 ? 'healthy' : 'warning',
+                message: missingVars.length === 0 
+                    ? `Email configured for ${process.env.OWNER_EMAIL}` 
+                    : `Missing variables: ${missingVars.join(', ')}`,
+                config: {
+                    host: process.env.SMTP_HOST || 'not set',
+                    port: process.env.SMTP_PORT || 'not set',
+                    user: process.env.SMTP_USER || 'not set',
+                    recipient: process.env.OWNER_EMAIL || 'not set'
+                }
+            };
+        } catch (emailError) {
+            healthData.services.email = {
+                status: 'error',
+                message: emailError.message
+            };
+        }
+        
+        // Retell-Status prüfen
+        try {
+            healthData.services.retell = {
+                status: process.env.RETELL_API_KEY ? 'healthy' : 'warning',
+                message: process.env.RETELL_API_KEY ? 'API key configured' : 'API key missing',
+                webhookUrl: req.protocol + '://' + req.get('host') + '/api/retell/webhook'
+            };
+        } catch (retellError) {
+            healthData.services.retell = {
+                status: 'error',
+                message: retellError.message
+            };
+        }
+        
+        // Gesamtstatus bestimmen
+        const serviceStatuses = Object.values(healthData.services).map(s => s.status);
+        if (serviceStatuses.includes('error')) {
+            healthData.status = 'degraded';
+        } else if (serviceStatuses.includes('warning')) {
+            healthData.status = 'warning';
+        }
+        
+        const performanceHealthData = monitor.getHealthCheck();
+        
+        markPhase(req, 'health_check_complete');
+        
+        // Response Status Code basierend auf Gesundheit
+        const statusCode = healthData.status === 'healthy' ? 200 : 
+                          healthData.status === 'warning' ? 200 : 503;
+        
+        res.status(statusCode).json({
+            ...healthData,
+            ...performanceHealthData,
+            service: 'KFZ-Sachverständiger API',
+            features: [
+                'advanced_natural_language_processing', 
+                'multi_layered_extraction', 
+                'confidence_scoring',
+                'intelligent_validation',
+                'modular_architecture',
+                'real_time_performance_monitoring',
+                'health_checks',
+                'error_tracking',
+                'web_dashboard',
+                'gmail_api_integration'
+            ]
+        });
+        
+    } catch (error) {
+        console.error('❌ Health Check Fehler:', error);
+        res.status(503).json({
+            status: 'error',
+            timestamp: new Date().toISOString(),
+            error: error.message,
+            message: 'Health check failed'
+        });
+    }
 });
 
 // ================================
@@ -148,13 +249,261 @@ app.get('/api/health/detailed', (req, res) => {
             port: process.env.PORT,
             has_supabase_url: !!process.env.SUPABASE_URL,
             has_supabase_key: !!process.env.SUPABASE_SERVICE_KEY,
-            has_retell_key: !!process.env.RETELL_API_KEY
+            has_retell_key: !!process.env.RETELL_API_KEY,
+            has_smtp_config: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
         }
     };
     
     markPhase(req, 'detailed_health_complete');
     
     res.json(detailedHealth);
+});
+
+// ================================
+// GMAIL API TEST ENDPOINTS
+// ================================
+
+// Test 1: E-Mail-Konfiguration testen
+app.get('/api/test/email', async (req, res) => {
+  try {
+    console.log('🧪 E-Mail Test gestartet...');
+    markPhase(req, 'email_test_start');
+    
+    // E-Mail-Konfiguration prüfen
+    const emailConfig = {
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT,
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS ? '***' + process.env.SMTP_PASS.slice(-4) : 'NICHT GESETZT',
+      ownerEmail: process.env.OWNER_EMAIL
+    };
+    
+    console.log('📧 E-Mail Config:', emailConfig);
+    markPhase(req, 'email_test_complete');
+    
+    res.json({
+      success: true,
+      message: 'E-Mail-Konfiguration erfolgreich geladen',
+      config: emailConfig,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+    
+  } catch (error) {
+    console.error('❌ E-Mail Test Fehler:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+  }
+});
+
+// Test 2: Test-Benachrichtigung senden
+app.post('/api/test/notification', async (req, res) => {
+  try {
+    console.log('🧪 Test-Benachrichtigung wird gesendet...');
+    markPhase(req, 'notification_test_start');
+    
+    // Simuliere eine Terminbuchung
+    const testBooking = {
+      customerName: 'Max Mustermann',
+      customerPhone: '0521-12345678',
+      customerEmail: 'test@example.com',
+      address: 'Musterstraße 123, 33602 Bielefeld',
+      damage: 'Unfallschaden Frontbereich',
+      appointmentDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleDateString('de-DE'),
+      appointmentTime: '14:00',
+      confidence: 0.95,
+      projectNumber: 'KFZ-TEST-001'
+    };
+    
+    // Prüfe ob Business Logic verfügbar ist und E-Mail senden kann
+    let emailSent = false;
+    try {
+      const businessLogic = require('./lib/businessLogic');
+      if (businessLogic && businessLogic.sendNotificationEmail) {
+        await businessLogic.sendNotificationEmail(testBooking);
+        emailSent = true;
+      }
+    } catch (emailError) {
+      console.warn('⚠️ E-Mail-Versendung nicht verfügbar:', emailError.message);
+    }
+    
+    markPhase(req, 'notification_test_complete');
+    
+    res.json({
+      success: true,
+      message: emailSent ? 'Test-E-Mail erfolgreich gesendet' : 'Test-Daten erstellt (E-Mail-Service nicht verfügbar)',
+      recipient: process.env.OWNER_EMAIL,
+      booking: testBooking,
+      emailSent: emailSent,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+    
+  } catch (error) {
+    console.error('❌ Test-Benachrichtigung Fehler:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+  }
+});
+
+// Test 3: System-Status mit erweiterten Informationen
+app.get('/api/test/system', async (req, res) => {
+  try {
+    markPhase(req, 'system_test_start');
+    
+    const systemInfo = {
+      server: {
+        status: 'online',
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        node_version: process.version,
+        timestamp: new Date().toISOString()
+      },
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        PORT: process.env.PORT || 3000,
+        hasSupabaseUrl: !!process.env.SUPABASE_URL,
+        hasSupabaseKey: !!process.env.SUPABASE_SERVICE_KEY,
+        hasRetellKey: !!process.env.RETELL_API_KEY,
+        hasSmtpConfig: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
+      },
+      database: {
+        connected: false,
+        error: null
+      }
+    };
+    
+    // Datenbank-Verbindung testen
+    try {
+      if (supabase) {
+        const tenantProjectId = await getTenantProjectId(supabase);
+        const { data, error } = await supabase.from('kfz_customers').select('count', { count: 'exact', head: true }).eq('tenant_project_id', tenantProjectId);
+        systemInfo.database.connected = !error;
+        systemInfo.database.error = error?.message || null;
+        systemInfo.database.customerCount = data?.length || 0;
+      }
+    } catch (dbError) {
+      systemInfo.database.error = dbError.message;
+    }
+    
+    markPhase(req, 'system_test_complete');
+    
+    res.json({
+      success: true,
+      system: systemInfo,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+    
+  } catch (error) {
+    console.error('❌ System Test Fehler:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+  }
+});
+
+// Test 4: Webhook-Simulation
+app.post('/api/test/webhook', async (req, res) => {
+  try {
+    console.log('🧪 Webhook-Simulation gestartet...');
+    markPhase(req, 'webhook_test_start');
+    
+    // Simuliere einen Retell Webhook
+    const mockWebhookData = {
+      event: 'call_ended',
+      call: {
+        call_id: 'test-call-' + Date.now(),
+        from_number: '+4952112345678',
+        to_number: '+4952187654321',
+        start_timestamp: Date.now() - 300000, // 5 Minuten ago
+        end_timestamp: Date.now(),
+        transcript: 'Hallo, ich bin Max Mustermann und hatte einen Unfall mit meinem BMW. Ich brauche einen Gutachter-Termin für morgen um 14 Uhr. Meine Adresse ist Musterstraße 123 in Bielefeld. Sie können mich unter 0521-12345678 erreichen.',
+        call_analysis: {
+          call_successful: true,
+          call_summary: 'Kunde Max Mustermann möchte Gutachter-Termin für BMW Unfallschaden'
+        }
+      }
+    };
+    
+    // Simuliere Datenextraktion
+    const extractedData = extractCustomerDataIntelligent(mockWebhookData.call.transcript);
+    
+    markPhase(req, 'webhook_test_complete');
+    
+    res.json({
+      success: true,
+      message: 'Webhook-Simulation erfolgreich',
+      mockData: mockWebhookData,
+      extractedData: extractedData,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+    
+  } catch (error) {
+    console.error('❌ Webhook-Simulation Fehler:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId
+    });
+  }
+});
+
+// Zusätzlicher einfacher Health Check für Load Balancer
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
+
+// API Info Endpoint
+app.get('/api/info', (req, res) => {
+  res.json({
+    service: 'KFZ-Sachverständiger API',
+    version: '3.2.0-performance-monitored',
+    description: 'API für automatisierte Kundentermin-Buchungen mit Retell AI Integration und Gmail API',
+    endpoints: {
+      health: '/health',
+      ping: '/ping',
+      webhook: '/api/retell/webhook',
+      dashboard: '/api/dashboard',
+      customers: '/api/customers',
+      projects: '/api/projects',
+      calls: '/api/calls',
+      performance: '/api/performance',
+      metrics: '/api/metrics',
+      test: {
+        email: '/api/test/email',
+        notification: '/api/test/notification',
+        system: '/api/test/system',
+        webhook: '/api/test/webhook'
+      }
+    },
+    features: [
+      'advanced_natural_language_processing',
+      'multi_layered_extraction',
+      'confidence_scoring',
+      'intelligent_validation',
+      'modular_architecture',
+      'real_time_performance_monitoring',
+      'health_checks',
+      'error_tracking',
+      'web_dashboard',
+      'gmail_api_integration'
+    ],
+    timestamp: new Date().toISOString()
+  });
 });
 
 // ================================
@@ -474,7 +823,8 @@ app.get('/api/dashboard', async (req, res) => {
                     'modular_architecture',
                     'real_time_monitoring',
                     'performance_analytics',
-                    'web_dashboard'
+                    'web_dashboard',
+                    'gmail_api_integration'
                 ]
             },
             lastUpdated: new Date().toISOString(),
@@ -557,6 +907,33 @@ app.get('/api/calls', async (req, res) => {
     }
 });
 
+// Fallback für unbekannte Routes
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Not Found',
+    message: `Route ${req.method} ${req.originalUrl} not found`,
+    timestamp: new Date().toISOString(),
+    requestId: req.requestId,
+    availableEndpoints: [
+      'GET /health',
+      'GET /ping',
+      'GET /api/info',
+      'POST /api/retell/webhook',
+      'GET /api/dashboard',
+      'GET /api/customers',
+      'GET /api/projects',
+      'GET /api/calls',
+      'GET /api/performance', 
+      'GET /api/metrics',
+      'GET /api/health/detailed',
+      'GET /api/test/email',
+      'POST /api/test/notification',
+      'GET /api/test/system',
+      'POST /api/test/webhook'
+    ]
+  });
+});
+
 // Add error handling middleware
 app.use(errorMonitoringMiddleware);
 
@@ -586,6 +963,7 @@ app.listen(PORT, () => {
     console.log(`📈 Performance: http://localhost:${PORT}/api/performance`);
     console.log(`🩺 Health: http://localhost:${PORT}/health`);
     console.log(`🔗 Webhook: http://localhost:${PORT}/api/retell/webhook`);
+    console.log(`📧 Gmail Test: http://localhost:${PORT}/api/test/email`);
     console.log('💾 Database: Connected');
     console.log('🧠 Enhanced Multi-Layer Data Extraction Ready!');
     console.log('🎯 Advanced Natural Language Processing Active!');
@@ -594,6 +972,7 @@ app.listen(PORT, () => {
     console.log('📈 Real-time Performance Monitoring: ACTIVE');
     console.log('🩺 Health Checks & Error Tracking: ACTIVE');
     console.log('🌐 Web Dashboard Interface: ACTIVE');
+    console.log('📧 Gmail API Integration: ACTIVE');
     
     // Log initial system health
     setTimeout(() => {
